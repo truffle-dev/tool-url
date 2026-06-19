@@ -1,0 +1,823 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>URL allowlist footgun inspector</title>
+<meta name="description" content="Paste an untrusted URL and see what the browser's WHATWG parser actually makes of it: the real host, embedded credentials, punycode homographs, normalized IP notations, and trailing-dot boundaries. Then test it against an allowlist host and watch how a naive substring or endsWith check gets bypassed.">
+<link rel="canonical" href="https://truffle.ghostwright.dev/public/tools/url/">
+<link rel="icon" type="image/png" sizes="32x32" href="/public/_assets/favicon-32.png">
+<meta property="og:type" content="website">
+<meta property="og:title" content="URL allowlist footgun inspector">
+<meta property="og:description" content="See the host the browser really parses out of an untrusted URL, and how a naive allowlist check gets bypassed by it.">
+<meta property="og:url" content="https://truffle.ghostwright.dev/public/tools/url/">
+<meta name="twitter:card" content="summary">
+
+<style>
+:root {
+  --paper: #f6f1e6;
+  --paper-raised: #fbf7ec;
+  --ink: #1c1814;
+  --ink-soft: #2e2822;
+  --quiet: #6b6157;
+  --rule: #e0d6c0;
+  --rule-soft: #ebe2cf;
+  --link: #7a4f1a;
+  --accent: #a57729;
+  --accent-bright: #c39040;
+  --code-bg: #ece3cc;
+  --code-ink: #2e2822;
+  --ok: #4f7a2e;
+  --warn: #a57729;
+  --over: #a83a25;
+  --font-body: "Iowan Old Style", "Palatino Linotype", Palatino, "URW Palladio L", "Book Antiqua", Georgia, serif;
+  --font-display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #171310;
+    --paper-raised: #1e1814;
+    --ink: #f0e9d9;
+    --ink-soft: #e0d9c6;
+    --quiet: #9c9082;
+    --rule: #2e2820;
+    --rule-soft: #26211b;
+    --link: #d4a259;
+    --accent: #d4a259;
+    --accent-bright: #e4b574;
+    --code-bg: #201a15;
+    --code-ink: #e0d9c6;
+    --ok: #95c963;
+    --warn: #d4a259;
+    --over: #e07a5f;
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font: 17px/1.6 var(--font-body);
+  color: var(--ink);
+  background: var(--paper);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+main {
+  max-width: 46rem;
+  padding: 2.5rem 1.5rem 4rem;
+  margin: 0 auto;
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--accent);
+  margin: 0 0 0.7rem;
+}
+.eyebrow a {
+  color: var(--accent);
+  border-bottom: 1px solid color-mix(in oklab, var(--accent) 30%, transparent);
+  text-decoration: none;
+}
+
+h1 {
+  font-family: var(--font-mono);
+  font-size: clamp(1.6rem, 4vw, 2.1rem);
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  margin: 0 0 0.5rem;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.lede {
+  font-size: 1.02rem;
+  color: var(--ink-soft);
+  margin: 0 0 2rem;
+  max-width: 38rem;
+}
+
+h2 {
+  font-size: 1.05rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--quiet);
+  margin: 2.2rem 0 0.9rem;
+  font-weight: 600;
+  font-family: var(--font-mono);
+}
+
+p { margin: 0 0 1rem; }
+
+a {
+  color: var(--link);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in oklab, var(--link) 30%, transparent);
+}
+a:hover { border-bottom-color: var(--link); }
+
+label.field-label {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--quiet);
+  margin: 1.2rem 0 0.5rem;
+}
+label.field-label:first-of-type { margin-top: 0; }
+
+textarea.io {
+  width: 100%;
+  min-height: 3.2rem;
+  padding: 0.85rem 0.95rem;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  background: var(--paper-raised);
+  color: var(--ink);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  -webkit-appearance: none;
+  resize: vertical;
+  tab-size: 2;
+  white-space: pre;
+  overflow-x: auto;
+}
+textarea.io:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+.preset-label {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--quiet);
+  margin: 1.6rem 0 0;
+}
+
+.presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.9rem 0 0;
+}
+.presets button {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 0.32rem 0.65rem;
+  cursor: pointer;
+  -webkit-appearance: none;
+  letter-spacing: 0.02em;
+  text-align: left;
+}
+.presets button:hover { border-color: var(--accent); color: var(--accent); }
+.presets button:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.result {
+  margin: 1.6rem 0 0;
+  padding: 1.1rem 1.2rem;
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+}
+
+.status {
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  margin: 0 0 0.6rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.status.ok { color: var(--ok); }
+.status.over { color: var(--over); }
+.status.warn { color: var(--warn); }
+
+.summary {
+  font-family: var(--font-display);
+  font-size: 1.18rem;
+  line-height: 1.4;
+  margin: 0 0 0.6rem;
+  color: var(--ink);
+}
+.summary em {
+  font-style: italic;
+  color: var(--accent);
+}
+.summary code {
+  font-style: normal;
+  font-size: 0.86em;
+}
+
+ol.steps {
+  list-style: none;
+  counter-reset: step;
+  margin: 0.8rem 0 0;
+  padding: 0;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+ol.steps li {
+  position: relative;
+  padding: 0.5rem 0 0.5rem 2.1rem;
+  border-bottom: 1px solid var(--rule-soft);
+  color: var(--ink-soft);
+  counter-increment: step;
+}
+ol.steps li:last-child { border-bottom: 0; }
+ol.steps li::before {
+  content: counter(step);
+  position: absolute;
+  left: 0;
+  top: 0.5rem;
+  width: 1.4rem;
+  height: 1.4rem;
+  line-height: 1.4rem;
+  text-align: center;
+  border-radius: 50%;
+  font-size: 0.72rem;
+  border: 1px solid var(--rule);
+  color: var(--quiet);
+  background: var(--paper);
+}
+ol.steps li.pass::before { color: var(--ok); border-color: color-mix(in oklab, var(--ok) 55%, transparent); content: "\2713"; }
+ol.steps li.fail::before { color: var(--over); border-color: color-mix(in oklab, var(--over) 55%, transparent); content: "\2717"; }
+ol.steps li.skip::before { color: var(--quiet); content: "\2013"; }
+ol.steps li.warnstep::before { color: var(--warn); border-color: color-mix(in oklab, var(--warn) 55%, transparent); content: "!"; }
+ol.steps li .head { color: var(--ink); }
+ol.steps li.fail .head { color: var(--over); }
+ol.steps li .why {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--quiet);
+  margin-top: 0.2rem;
+}
+ol.steps li code { font-size: 0.92em; word-break: break-all; }
+
+table.parts {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  margin: 1rem 0 0;
+}
+table.parts th, table.parts td {
+  text-align: left;
+  padding: 0.42rem 0.55rem;
+  border-bottom: 1px solid var(--rule-soft);
+  vertical-align: top;
+}
+table.parts th {
+  text-transform: uppercase;
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  color: var(--quiet);
+  font-weight: 600;
+  border-bottom: 1px solid var(--rule);
+}
+table.parts td:first-child { color: var(--quiet); white-space: nowrap; }
+table.parts td:nth-child(2) { color: var(--ink); word-break: break-all; }
+table.parts td.hl { color: var(--accent); font-weight: 600; }
+table.parts td.empty { color: var(--quiet); font-style: italic; }
+
+table.reference {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  margin: 0;
+}
+table.reference th, table.reference td {
+  text-align: left;
+  padding: 0.42rem 0.55rem;
+  border-bottom: 1px solid var(--rule-soft);
+  vertical-align: top;
+}
+table.reference th {
+  text-transform: uppercase;
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  color: var(--quiet);
+  font-weight: 600;
+  border-bottom: 1px solid var(--rule);
+}
+table.reference td:first-child { color: var(--accent); font-weight: 600; white-space: nowrap; }
+table.reference td:nth-child(2) { color: var(--ink-soft); }
+
+code, pre {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--code-bg);
+  color: var(--code-ink);
+  padding: 0.1rem 0.32rem;
+  border-radius: 3px;
+}
+pre {
+  padding: 0.7rem 0.9rem;
+  overflow-x: auto;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+footer.colophon {
+  margin: 4rem 0 0;
+  padding: 1.2rem 0 0;
+  border-top: 1px solid var(--rule);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--quiet);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 1.4rem;
+  justify-content: space-between;
+}
+footer.colophon a {
+  color: var(--quiet);
+  border-bottom-color: color-mix(in oklab, var(--quiet) 30%, transparent);
+}
+footer.colophon a:hover { color: var(--accent); border-bottom-color: var(--accent); }
+
+@media (max-width: 540px) {
+  main { padding: 1.8rem 1rem 3rem; }
+  textarea.io { font-size: 0.82rem; }
+  table.reference, table.parts { font-size: 0.76rem; }
+  .summary { font-size: 1.04rem; }
+}
+</style>
+</head>
+<body>
+
+<main>
+
+<p class="eyebrow"><a href="/public/tools/">/public/tools/</a></p>
+<h1>URL allowlist footgun inspector</h1>
+<p class="lede">Paste an untrusted URL and see what the browser's own WHATWG parser makes of it: the host it will really connect to, credentials hidden before an <code>@</code>, punycode homographs, alternate IP notations it silently normalizes, and trailing-dot boundaries. Then give it an allowlist host and watch a naive <code>includes()</code> or <code>endsWith()</code> check wave the wrong origin straight through.</p>
+
+<label class="field-label" for="url">The untrusted URL</label>
+<textarea id="url" spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off">https://example.com@evil.example.net/login</textarea>
+
+<label class="field-label" for="allow">Allowlist host (optional) &mdash; the host you mean to permit</label>
+<textarea id="allow" spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off">example.com</textarea>
+
+<span class="preset-label">presets</span>
+<div class="presets" id="presets"></div>
+
+<section class="result" id="result" aria-live="polite">
+  <p class="status ok" id="status">parsing&hellip;</p>
+  <p class="summary" id="summary"></p>
+  <ol class="steps" id="steps"></ol>
+</section>
+
+<h2>What the browser parses</h2>
+<table class="parts" id="parts">
+  <thead><tr><th>component</th><th>value</th></tr></thead>
+  <tbody></tbody>
+</table>
+
+<h2>The host is whatever follows the last @</h2>
+<p>The single most exploited URL footgun is the userinfo field. In <code>https://example.com@evil.example.net/</code> the part before the <code>@</code> is a username, not a host. The browser connects to <em>evil.example.net</em>. Any check that reads the host by taking the text after <code>://</code> up to the first slash, without stripping userinfo, sees <code>example.com</code> and is fooled. The fix is never to slice the string yourself: parse it and read <code>url.hostname</code>, which is what this tool shows you.</p>
+
+<h2>Backslashes, and the schemes that normalize them</h2>
+<p>For the special schemes (<code>http</code>, <code>https</code>, <code>ws</code>, <code>wss</code>, <code>ftp</code>, <code>file</code>) the parser treats <code>\</code> as <code>/</code>. So <code>https:/\evil.example.net</code> and <code>https://example.com\@evil.example.net</code> resolve to a host most hand-written splitters never expect. A redirect validator written against forward slashes is blind to the backslash variant; the browser is not.</p>
+
+<h2>Alternate IP notations collapse to one address</h2>
+<p>The parser canonicalizes IPv4. <code>http://0x7f.1</code>, <code>http://2130706433</code>, <code>http://0177.0.0.1</code>, and <code>http://127.1</code> all become <code>127.0.0.1</code>. An SSRF allowlist that blocks the literal string <code>127.0.0.1</code> or <code>localhost</code> but not its octal, hex, decimal, or short forms is bypassed, because the socket connects to the same loopback address either way. Compare against the parsed host, and for SSRF resolve and check the actual IP.</p>
+
+<h2>Punycode and the trailing dot</h2>
+<p>An internationalized host is stored in its ASCII <code>xn--</code> form, so <code>hostname</code> on a homograph like a Cyrillic <code>а</code> in <q>example</q> reads as <code>xn--</code> gibberish that is not the name you trust. And a fully-qualified host carries an optional trailing dot: <code>example.com.</code> resolves to the same site as <code>example.com</code> but is a different string, so an exact-match allowlist of <code>example.com</code> rejects the dotted form while the browser accepts it. Both are flagged above when present.</p>
+
+<h2>Why a substring or endsWith check is not enough</h2>
+<p>Two checks people reach for, and why they leak. <code>url.includes("example.com")</code> matches <code>https://example.com.evil.net</code>, <code>https://evil.com/?next=example.com</code>, and the userinfo trick, none of which are your site. <code>hostname.endsWith("example.com")</code> matches <code>notexample.com</code> because there is no dot boundary. The safe shape is exact host or a real subdomain: <code>h === "example.com" || h.endsWith(".example.com")</code>, evaluated on the parsed <code>hostname</code>, never on the raw string. When you give an allowlist host above, the tool runs all three and shows you where they disagree.</p>
+
+<h2>What this tool does not do</h2>
+<p>It parses one URL with the browser's resolver and reasons about its parts; it does not fetch the URL, follow redirects, resolve DNS, or check an IP against private ranges. It cannot tell you that a hostname resolves to an internal address, only that the host you typed is or is not the host you meant. Relative URLs are resolved against <code>https://base.invalid/</code> so you can see how a path-only or scheme-relative input expands. For SSRF defense, treat the parsed host as the start, not the end: resolve it and check the address you would actually connect to.</p>
+
+<h2>Component reference</h2>
+<table class="reference">
+  <thead>
+    <tr><th>component</th><th>meaning</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>protocol</td><td>The scheme with its colon, lowercased, e.g. <code>https:</code>. Anything outside http/https deserves scrutiny in a redirect or fetch sink.</td></tr>
+    <tr><td>username / password</td><td>Userinfo, the text before <code>@</code> in the authority. Present means the URL carries credentials and the host is what follows the <code>@</code>.</td></tr>
+    <tr><td>hostname</td><td>The host with no port, lowercased, IDN as <code>xn--</code> punycode, IPv4 canonicalized, IPv6 in brackets. This is the value to compare an allowlist against.</td></tr>
+    <tr><td>host</td><td><code>hostname</code> plus <code>:port</code> when the port is non-default. The default port for the scheme is stripped.</td></tr>
+    <tr><td>origin</td><td>scheme + host, the security principal. <code>null</code> for opaque schemes such as <code>data:</code> and <code>blob:</code>.</td></tr>
+    <tr><td>pathname</td><td>The path, with <code>.</code> and <code>..</code> segments already resolved and backslashes normalized for special schemes.</td></tr>
+  </tbody>
+</table>
+
+<p style="margin-top: 1.8rem;">Single static HTML file, no network. The parsing is the browser's own <code>URL</code> constructor; nothing you type leaves the page. Source: <a href="https://github.com/truffle-dev/tool-url">github.com/truffle-dev/tool-url</a>. MIT.</p>
+
+<footer class="colophon">
+  <span><a href="https://truffle.ghostwright.dev/">truffle.ghostwright.dev</a></span>
+  <span>MIT &middot; <a href="https://github.com/truffle-dev/tool-url">source</a></span>
+</footer>
+
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---------- URL decision engine ----------
+  // Faithful to the WHATWG URL Standard by delegating parsing to the platform
+  // URL constructor (the same parser the browser's network stack uses). No
+  // network: pure logic over the parsed result plus the raw input.
+
+  var SPECIAL_SCHEMES = { "http:": 1, "https:": 1, "ws:": 1, "wss:": 1, "ftp:": 1, "file:": 1 };
+  var SAFE_SCHEMES = { "http:": 1, "https:": 1 };
+  // Schemes that are dangerous when an untrusted URL flows into a navigation
+  // or redirect sink.
+  var DANGEROUS_SCHEMES = { "javascript:": 1, "data:": 1, "blob:": 1, "vbscript:": 1, "file:": 1 };
+  var BASE = "https://base.invalid/";
+
+  function parseURL(raw) {
+    raw = String(raw == null ? "" : raw);
+    var trimmed = raw.trim();
+    if (!trimmed) return { ok: false, empty: true };
+    var u, relative = false;
+    try {
+      u = new URL(trimmed);
+    } catch (e1) {
+      try {
+        u = new URL(trimmed, BASE);
+        relative = true;
+      } catch (e2) {
+        return { ok: false, error: String((e2 && e2.message) || e2) };
+      }
+    }
+    return {
+      ok: true,
+      relative: relative,
+      raw: trimmed,
+      href: u.href,
+      protocol: u.protocol,
+      username: u.username,
+      password: u.password,
+      hostname: u.hostname,
+      host: u.host,
+      port: u.port,
+      pathname: u.pathname,
+      search: u.search,
+      hash: u.hash,
+      origin: u.origin
+    };
+  }
+
+  function isIPv4(h) {
+    if (!/^[0-9.]+$/.test(h)) return false;
+    var parts = h.split(".");
+    if (parts.length !== 4) return false;
+    for (var i = 0; i < parts.length; i++) {
+      if (parts[i] === "" || !/^[0-9]+$/.test(parts[i])) return false;
+      var n = parseInt(parts[i], 10);
+      if (n < 0 || n > 255) return false;
+    }
+    return true;
+  }
+  function isIPv6(h) { return h.charAt(0) === "[" && h.charAt(h.length - 1) === "]"; }
+
+  // The host a careless parser would read: text after "://" up to the first
+  // "/", "?" or "#", WITHOUT stripping userinfo. This is the value that gets
+  // fooled, and contrasting it with the real hostname is the whole point.
+  function naiveHostFromRaw(raw) {
+    var s = String(raw).trim();
+    var m = s.match(/^[a-zA-Z][a-zA-Z0-9+.\-]*:\/\//);
+    if (!m) return null;
+    var rest = s.slice(m[0].length);
+    var end = rest.length;
+    // A naive hand-written splitter is NOT backslash-aware: it stops at a
+    // forward slash, query, or fragment only. That blind spot is the point.
+    for (var i = 0; i < rest.length; i++) {
+      var c = rest.charAt(i);
+      if (c === "/" || c === "?" || c === "#") { end = i; break; }
+    }
+    return rest.slice(0, end);
+  }
+
+  function normHost(h) {
+    return String(h == null ? "" : h).trim().toLowerCase().replace(/\.+$/, "");
+  }
+
+  // Reduce an allowlist entry to a bare hostname: strip scheme, userinfo,
+  // path, port, and trailing dot.
+  function allowToHost(allow) {
+    var a = String(allow == null ? "" : allow).trim().toLowerCase();
+    if (!a) return "";
+    a = a.replace(/^[a-z][a-z0-9+.\-]*:\/\//, "");
+    a = a.split(/[/?#\\]/)[0];
+    if (a.indexOf("@") !== -1) a = a.slice(a.lastIndexOf("@") + 1);
+    a = a.split(":")[0];
+    return a.replace(/\.+$/, "");
+  }
+
+  function allowlistCheck(parsed, allowRaw) {
+    var a = allowToHost(allowRaw);
+    if (!a) return null;
+    var h = normHost(parsed.hostname);
+    var rawLower = String(parsed.raw).toLowerCase();
+    var safeExact = h === a;
+    var safeSuffix = h.endsWith("." + a);
+    var safe = safeExact || safeSuffix;
+    var naiveIncludes = rawLower.indexOf(a) !== -1;
+    var naiveEndsWith = h.endsWith(a);          // no dot boundary
+    var naiveStartsWith = h.indexOf(a) === 0;   // prefix match
+    return {
+      allowHost: a,
+      hostname: h,
+      safeExact: safeExact,
+      safeSuffix: safeSuffix,
+      safe: safe,
+      naiveIncludes: naiveIncludes,
+      naiveEndsWith: naiveEndsWith,
+      naiveStartsWith: naiveStartsWith,
+      bypass: (!safe) && (naiveIncludes || naiveEndsWith || naiveStartsWith),
+      falseDeny: false
+    };
+  }
+
+  function footguns(parsed) {
+    var out = [];
+    var h = parsed.hostname;
+
+    // scheme
+    if (SAFE_SCHEMES[parsed.protocol]) {
+      out.push({ state: "pass", head: "Scheme " + parsed.protocol + " is http(s)", why: "A normal navigable web scheme." });
+    } else if (DANGEROUS_SCHEMES[parsed.protocol]) {
+      out.push({ state: "fail", head: "Scheme " + parsed.protocol + " is dangerous in a redirect or fetch sink", why: "javascript:, data:, blob:, vbscript: and file: should never be reachable from an untrusted URL flowing into navigation." });
+    } else {
+      out.push({ state: "warnstep", head: "Scheme " + parsed.protocol + " is not http(s)", why: "Non-web scheme; confirm the sink that consumes this URL expects it." });
+    }
+
+    // userinfo
+    if (parsed.username || parsed.password) {
+      var shown = parsed.username + (parsed.password ? ":" + parsed.password : "");
+      out.push({ state: "fail", head: "Credentials before @: <code>" + esc(shown) + "</code> is userinfo, not the host", why: "The browser connects to " + (h || "(no host)") + ". A check that reads the host as the text after :// is fooled into trusting " + esc(shown.split(":")[0]) + "." });
+    }
+
+    // naive vs real host divergence (backslash / @ / etc.)
+    var naive = naiveHostFromRaw(parsed.raw);
+    if (naive != null) {
+      var naiveBare = naive.indexOf("@") !== -1 ? naive : naive; // show as-is
+      var naiveCmp = naive.toLowerCase();
+      var realCmp = (parsed.host || "").toLowerCase();
+      if (naiveCmp !== realCmp && naiveCmp.replace(/\\/g, "/") !== realCmp) {
+        out.push({ state: "warnstep", head: "A naive splitter reads <code>" + esc(naive) + "</code>, the parser reads <code>" + esc(parsed.host) + "</code>", why: "Slicing the authority by hand (before stripping userinfo or normalizing backslashes) disagrees with the real host." });
+      }
+    }
+
+    // backslash in authority
+    var auth = naive != null ? naive : "";
+    if (parsed.raw.indexOf("\\") !== -1 && SPECIAL_SCHEMES[parsed.protocol]) {
+      out.push({ state: "warnstep", head: "Backslashes were normalized to slashes", why: "For special schemes \\ is treated as /. Splitters written for forward slashes miss this variant." });
+    }
+
+    // IP host / alternate notation
+    if (isIPv4(h)) {
+      var naiveIp = naive ? naive.split("@").pop().split(":")[0] : "";
+      if (naiveIp && naiveIp !== h) {
+        out.push({ state: "fail", head: "Host parsed to IP <code>" + esc(h) + "</code> from <code>" + esc(naiveIp) + "</code>", why: "Octal, hex, decimal, and short IPv4 forms all canonicalize to one address. An allowlist matching the literal string is bypassed; resolve and check the address." });
+      } else {
+        out.push({ state: "warnstep", head: "Host is a literal IPv4 address <code>" + esc(h) + "</code>", why: "For SSRF defense, check the address against private/loopback ranges, not the string." });
+      }
+    } else if (isIPv6(h)) {
+      out.push({ state: "warnstep", head: "Host is a literal IPv6 address <code>" + esc(h) + "</code>", why: "Bracketed IPv6 literal; check the address, not the string, for SSRF." });
+    }
+
+    // punycode / IDN
+    if (/(^|\.)xn--/.test(h)) {
+      out.push({ state: "warnstep", head: "Host is an internationalized (punycode) domain <code>" + esc(h) + "</code>", why: "Stored in ASCII xn-- form. Verify it is not a homograph of a name you trust." });
+    }
+
+    // trailing dot
+    if (/\.$/.test(h)) {
+      out.push({ state: "warnstep", head: "Host has a trailing dot <code>" + esc(h) + "</code>", why: "Resolves to the same site but is a different string; exact-match allowlists reject it while the browser accepts it." });
+    }
+
+    // non-default / explicit port
+    if (parsed.port) {
+      out.push({ state: "skip", head: "Explicit port <code>:" + esc(parsed.port) + "</code>", why: "Non-default port for the scheme; default ports are stripped from host." });
+    }
+
+    // opaque origin
+    if (parsed.origin === "null") {
+      out.push({ state: "skip", head: "Opaque origin (origin is null)", why: "This scheme has no tuple origin; same-origin checks against it never match." });
+    }
+
+    return out;
+  }
+
+  function analyze(urlRaw, allowRaw) {
+    var parsed = parseURL(urlRaw);
+    if (parsed.empty) {
+      return { statusClass: "warn", statusText: "Waiting", summaryHtml: "Paste a URL above to inspect it.", steps: [], parts: [] };
+    }
+    if (!parsed.ok) {
+      return { statusClass: "over", statusText: "Unparseable", summaryHtml: "The browser's URL parser rejected this input: <code>" + esc(parsed.error || "invalid URL") + "</code>", steps: [], parts: [] };
+    }
+
+    var steps = footguns(parsed);
+    var al = allowlistCheck(parsed, allowRaw);
+
+    var parts = [
+      ["protocol", parsed.protocol, parsed.protocol ? "" : "empty"],
+      ["username", parsed.username, parsed.username ? "" : "empty"],
+      ["password", parsed.password, parsed.password ? "" : "empty"],
+      ["hostname", parsed.hostname, parsed.hostname ? "hl" : "empty"],
+      ["host", parsed.host, parsed.host ? "" : "empty"],
+      ["port", parsed.port, parsed.port ? "" : "empty (default)"],
+      ["origin", parsed.origin, parsed.origin && parsed.origin !== "null" ? "" : "empty"],
+      ["pathname", parsed.pathname, parsed.pathname ? "" : "empty"],
+      ["search", parsed.search, parsed.search ? "" : "empty"],
+      ["hash", parsed.hash, parsed.hash ? "" : "empty"],
+      ["href", parsed.href, ""]
+    ];
+
+    // allowlist steps appended after footguns
+    if (al) {
+      steps.push({
+        state: al.safe ? "pass" : "fail",
+        head: "Safe check: <code>h === \"" + esc(al.allowHost) + "\" || h.endsWith(\"." + esc(al.allowHost) + "\")</code> &rarr; " + (al.safe ? "allow" : "deny"),
+        why: al.safe ? ("Real host " + al.hostname + " is the allowed host or a subdomain of it.") : ("Real host " + al.hostname + " is neither " + al.allowHost + " nor a subdomain of it.")
+      });
+      steps.push({
+        state: al.naiveIncludes ? (al.safe ? "skip" : "fail") : "skip",
+        head: "Naive: <code>url.includes(\"" + esc(al.allowHost) + "\")</code> &rarr; " + (al.naiveIncludes ? "match" : "no match"),
+        why: al.naiveIncludes && !al.safe ? "Substring match on the whole URL, but the host is not allowed. This is the bypass." : "Substring on the raw URL; matches userinfo, query, and sibling-domain tricks."
+      });
+      steps.push({
+        state: (al.naiveEndsWith && !al.safe) ? "fail" : "skip",
+        head: "Naive: <code>hostname.endsWith(\"" + esc(al.allowHost) + "\")</code> &rarr; " + (al.naiveEndsWith ? "match" : "no match"),
+        why: (al.naiveEndsWith && !al.safe) ? "Ends with the string but with no dot boundary, so a sibling like " + esc("not" + al.allowHost) + " also matches." : "Suffix match with no leading dot; matches sibling domains."
+      });
+    }
+
+    // status: allowlist verdict dominates when present
+    var statusClass, statusText, summaryHtml;
+    var hasFail = steps.some(function (s) { return s.state === "fail"; });
+    var hasWarn = steps.some(function (s) { return s.state === "warnstep"; });
+
+    if (al) {
+      if (al.bypass) {
+        statusClass = "over"; statusText = "Bypass risk";
+        summaryHtml = "A naive check would <em>allow</em> this, but the real host is <em><code>" + esc(parsed.hostname) + "</code></em>, not <code>" + esc(al.allowHost) + "</code>.";
+      } else if (al.safe) {
+        statusClass = "ok"; statusText = "Allowed";
+        summaryHtml = "Real host <em><code>" + esc(parsed.hostname) + "</code></em> is on the allowlist for <code>" + esc(al.allowHost) + "</code>.";
+      } else {
+        statusClass = "ok"; statusText = "Denied (correctly)";
+        summaryHtml = "Real host <em><code>" + esc(parsed.hostname) + "</code></em> is not <code>" + esc(al.allowHost) + "</code>, and no naive check is fooled into allowing it.";
+      }
+    } else {
+      if (hasFail) {
+        statusClass = "over"; statusText = "Dangerous shape";
+        summaryHtml = "The browser connects to <em><code>" + esc(parsed.host || "(no host)") + "</code></em>. Note the flagged components below.";
+      } else if (hasWarn) {
+        statusClass = "warn"; statusText = "Inspect";
+        summaryHtml = "The browser connects to <em><code>" + esc(parsed.host || "(no host)") + "</code></em>.";
+      } else {
+        statusClass = "ok"; statusText = "Plain";
+        summaryHtml = "The browser connects to <em><code>" + esc(parsed.host || "(no host)") + "</code></em>. No parsing surprises.";
+      }
+    }
+
+    return { statusClass: statusClass, statusText: statusText, summaryHtml: summaryHtml, steps: steps, parts: parts };
+  }
+
+  // ---------- helpers ----------
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  // ---------- presets ----------
+  var PRESETS = [
+    { label: "userinfo @ trick (bypass)", url: "https://example.com@evil.example.net/login", allow: "example.com" },
+    { label: "sibling domain (bypass)", url: "https://example.com.evil.net/", allow: "example.com" },
+    { label: "backslash divergence", url: "https://example.com\\@evil.example.net/", allow: "" },
+    { label: "decimal IP \u2192 127.0.0.1", url: "http://2130706433/admin", allow: "" },
+    { label: "octal IP \u2192 127.0.0.1", url: "http://0177.0.0.1/", allow: "" },
+    { label: "punycode homograph", url: "https://\u0435xample.com/", allow: "example.com" },
+    { label: "trailing dot", url: "https://example.com./", allow: "example.com" },
+    { label: "real subdomain (allowed)", url: "https://api.example.com/v1", allow: "example.com" },
+    { label: "javascript: scheme", url: "javascript:alert(document.domain)", allow: "" },
+    { label: "scheme-relative", url: "//evil.example.net/path", allow: "example.com" }
+  ];
+
+  // ---------- DOM wiring ----------
+  var urlEl = document.getElementById("url");
+  var allowEl = document.getElementById("allow");
+  var statusEl = document.getElementById("status");
+  var summaryEl = document.getElementById("summary");
+  var stepsEl = document.getElementById("steps");
+  var partsBody = document.querySelector("#parts tbody");
+  var presetsEl = document.getElementById("presets");
+
+  function render() {
+    var out = analyze(urlEl.value, allowEl.value);
+    statusEl.className = "status " + out.statusClass;
+    statusEl.textContent = out.statusText;
+    summaryEl.innerHTML = out.summaryHtml;
+
+    var html = "";
+    for (var i = 0; i < out.steps.length; i++) {
+      var s = out.steps[i];
+      html += "<li class=\"" + s.state + "\"><span class=\"head\">" + s.head + "</span><span class=\"why\">" + s.why + "</span></li>";
+    }
+    stepsEl.innerHTML = html;
+
+    var prows = "";
+    for (var j = 0; j < out.parts.length; j++) {
+      var p = out.parts[j];
+      var name = p[0], val = p[1], cls = p[2];
+      if (val === "" || val == null) {
+        prows += "<tr><td>" + esc(name) + "</td><td class=\"empty\">" + esc(cls || "empty") + "</td></tr>";
+      } else {
+        prows += "<tr><td>" + esc(name) + "</td><td class=\"" + (cls === "hl" ? "hl" : "") + "\">" + esc(val) + "</td></tr>";
+      }
+    }
+    partsBody.innerHTML = prows;
+  }
+
+  function buildPresets() {
+    var html = "";
+    for (var i = 0; i < PRESETS.length; i++) {
+      html += "<button type=\"button\" data-i=\"" + i + "\">" + esc(PRESETS[i].label) + "</button>";
+    }
+    presetsEl.innerHTML = html;
+  }
+
+  // ---------- url-hash state ----------
+  function loadFromHash() {
+    if (!location.hash) return false;
+    try {
+      var json = decodeURIComponent(escape(atob(location.hash.slice(1))));
+      var st = JSON.parse(json);
+      if (st && typeof st.u === "string") {
+        urlEl.value = st.u;
+        allowEl.value = typeof st.a === "string" ? st.a : "";
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+  function saveToHash() {
+    try {
+      var json = JSON.stringify({ u: urlEl.value, a: allowEl.value });
+      var enc = btoa(unescape(encodeURIComponent(json)));
+      if (("#" + enc) !== location.hash) {
+        history.replaceState(null, "", "#" + enc);
+      }
+    } catch (_) {}
+  }
+
+  loadFromHash();
+  buildPresets();
+
+  urlEl.addEventListener("input", function () { render(); saveToHash(); });
+  allowEl.addEventListener("input", function () { render(); saveToHash(); });
+  presetsEl.addEventListener("click", function (e) {
+    var t = e.target;
+    if (t && t.tagName === "BUTTON" && t.dataset.i != null) {
+      var p = PRESETS[+t.dataset.i];
+      urlEl.value = p.url; allowEl.value = p.allow;
+      render(); saveToHash();
+    }
+  });
+
+  render();
+
+  // expose for offline testing
+  if (typeof globalThis !== "undefined") {
+    globalThis.__URLTOOL = {
+      analyze: analyze, parseURL: parseURL, footguns: footguns,
+      allowlistCheck: allowlistCheck, allowToHost: allowToHost,
+      naiveHostFromRaw: naiveHostFromRaw, normHost: normHost,
+      isIPv4: isIPv4, isIPv6: isIPv6
+    };
+  }
+})();
+</script>
+
+</body>
+</html>
