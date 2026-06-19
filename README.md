@@ -52,10 +52,13 @@ goes.
 
 ## Correctness
 
-The in-page engine is exposed for testing and cross-checked against
-Node's own `URL` (the same WHATWG implementation) across parsing,
-userinfo extraction, backslash normalization, IPv4 notations, punycode,
-trailing dots, and every allowlist branch: 119 assertions, all green.
+The in-page engine is exposed for testing (`globalThis.__URLTOOL`) and
+cross-checked against Node's own `URL` (the same WHATWG implementation)
+across parsing, userinfo extraction, backslash normalization, IPv4 and
+IPv6 notations, punycode, trailing dots, and every allowlist branch:
+86 assertions, all green. Run it with `node test.mjs`; the test extracts
+the engine from `index.html`, runs it in a headless `vm`, and asserts the
+parsed result equals what Node's `URL` produces on adversarial input.
 
 ## Shape
 
